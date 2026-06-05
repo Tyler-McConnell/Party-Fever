@@ -28,11 +28,72 @@ const CHALLENGES = [
   "Take a sip if you are going to regret tomorrow.",
 ];
 
+const HYPE_LINES = [
+  "🔥 LET'S GOOOO 🔥",
+  "🎉 IT'S ON 🎉",
+  "🚀 PARTY MODE ENGAGED 🚀",
+  "💃 SHAKE THE ROOM 💃",
+  "🪩 DISCO INFERNO 🪩",
+];
+
+function ConfettiLayer() {
+  const pieces = useMemo(
+    () =>
+      Array.from({ length: 60 }, (_, i) => ({
+        i,
+        left: Math.random() * 100,
+        delay: Math.random() * 2,
+        dur: 2.5 + Math.random() * 3,
+        size: 6 + Math.random() * 10,
+        color: ["#ff6b35", "#f7d51d", "#ff3ea5", "#7b2cbf", "#3ad6ff"][Math.floor(Math.random() * 5)],
+      })),
+    [],
+  );
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      {pieces.map((p) => (
+        <span
+          key={p.i}
+          className="absolute top-0 animate-confetti"
+          style={{
+            left: `${p.left}%`,
+            width: p.size,
+            height: p.size * 0.4,
+            background: p.color,
+            animationDuration: `${p.dur}s`,
+            animationDelay: `${p.delay}s`,
+            borderRadius: 2,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 function PartyPage() {
   const { inventory, drinks, drinksMade, toForgetOrders, partyMode, setPartyMode, barIsClosed, logDrink, adjustAmount, pourRecipe } = useStore();
   const t = totals(inventory);
   const status = partyStatus(drinksMade, toForgetOrders);
   const forecast = hangoverForecast(drinksMade, toForgetOrders);
+
+  // popups
+  const [showOpenPopup, setShowOpenPopup] = useState(false);
+  const [showClosedConfirm, setShowClosedConfirm] = useState(false);
+  const [shotAlert, setShotAlert] = useState(false);
+
+  function handleToggleBar() {
+    if (partyMode) {
+      setShowClosedConfirm(true);
+    } else {
+      setPartyMode(true);
+      setShowOpenPopup(true);
+    }
+  }
+
+  function handleConfirmClose() {
+    barIsClosed();
+    setShowClosedConfirm(false);
+  }
 
   const [challenge, setChallenge] = useState(CHALLENGES[0]);
   useEffect(() => {
@@ -46,7 +107,12 @@ function PartyPage() {
   const [remain, setRemain] = useState<number | null>(null);
   useEffect(() => {
     if (remain === null) return;
-    if (remain <= 0) { setRemain(null); return; }
+    if (remain <= 0) {
+      setRemain(null);
+      setShotAlert(true);
+      const t = setTimeout(() => setShotAlert(false), 10000);
+      return () => clearTimeout(t);
+    }
     const id = setTimeout(() => setRemain((r) => (r ?? 1) - 1), 1000);
     return () => clearTimeout(id);
   }, [remain]);
@@ -59,83 +125,57 @@ function PartyPage() {
   );
   const { possible: cocktails } = useMemo(() => matchRecipes(inventory), [inventory]);
 
-  // option encoding: "beer:<id>" | "shot:<id>" | "cocktail:<recipeName>"
-  type Option =
-    | { kind: "beer"; id: string; label: string }
-    | { kind: "shot"; id: string; label: string }
-    | { kind: "cocktail"; recipeIndex: number; label: string };
-
-  const options = useMemo<Option[]>(() => {
-    const out: Option[] = [];
-    beers.forEach((b) => out.push({ kind: "beer", id: b.id, label: `🍺 ${b.name} (${b.amount} left)` }));
-    shotsAvail.forEach((l) => out.push({ kind: "shot", id: l.id, label: `🥃 Shot of ${l.name} (${shotsOf(l).toFixed(1)} left)` }));
-    cocktails.forEach((c, idx) => out.push({ kind: "cocktail", recipeIndex: idx, label: `${c.recipe.emoji} ${c.recipe.name}` }));
-    return out;
-  }, [beers, shotsAvail, cocktails]);
-
-  const [selectedKey, setSelectedKey] = useState<string>("");
-  const [strength, setStrength] = useState<Strength>("normal");
-  const selected = useMemo(() => {
-    if (!selectedKey) return null;
-    const [k, rest] = selectedKey.split(":");
-    if (k === "beer") return options.find((o) => o.kind === "beer" && o.id === rest) ?? null;
-    if (k === "shot") return options.find((o) => o.kind === "shot" && o.id === rest) ?? null;
-    if (k === "cocktail") return options.find((o) => o.kind === "cocktail" && String(o.recipeIndex) === rest) ?? null;
-    return null;
-  }, [selectedKey, options]);
-
-  function handleLogDrink() {
-    if (!selected) return;
-    if (selected.kind === "beer") {
-      adjustAmount(selected.id, -1);
-      logDrink({ name: options.find((o) => o === selected)!.label.replace(/^🍺 /, "").replace(/ \(\d+ left\)$/, ""), strength: "normal" });
-    } else if (selected.kind === "shot") {
-      // straight shot: 1 shot * strength multiplier
-      const liquor = shotsAvail.find((x) => x.id === selected.id);
-      if (!liquor) return;
-      pourRecipe(`Shot of ${liquor.name}`, [liquor.id], [], strength);
-    } else {
-      const c = cocktails[selected.recipeIndex];
-      if (!c) return;
-      pourRecipe(c.recipe.name, c.liquorIds, c.mixerIds, strength);
+  type Tab = "beer" | "shot" | "cocktail";
+  const [tab, setTab] = useState<Tab>("beer");
+  // auto-switch to a tab with content
+  useEffect(() => {
+    if (tab === "beer" && beers.length === 0) {
+      if (shotsAvail.length) setTab("shot");
+      else if (cocktails.length) setTab("cocktail");
     }
-    setSelectedKey("");
-    setStrength("normal");
+  }, [tab, beers.length, shotsAvail.length, cocktails.length]);
+
+  function quickBeer(id: string, name: string) {
+    adjustAmount(id, -1);
+    logDrink({ name, strength: "normal" });
+  }
+  function quickShot(id: string, name: string, strength: Strength = "normal") {
+    pourRecipe(`Shot of ${name}`, [id], [], strength);
+  }
+  function quickCocktail(idx: number, strength: Strength = "normal") {
+    const c = cocktails[idx];
+    if (!c) return;
+    pourRecipe(c.recipe.name, c.liquorIds, c.mixerIds, strength);
   }
 
   const top = Object.entries(
     drinks.reduce<Record<string, number>>((acc, d) => { acc[d.name] = (acc[d.name] ?? 0) + 1; return acc; }, {}),
   ).sort((a, b) => b[1] - a[1]).slice(0, 5);
 
+  const hype = HYPE_LINES[drinksMade % HYPE_LINES.length];
+
   return (
     <>
       <header className="border-b border-border relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-party opacity-10" aria-hidden />
+        <div className="absolute inset-0 bg-gradient-party opacity-20" aria-hidden />
+        <div className="absolute inset-0 scanlines pointer-events-none" aria-hidden />
         <div className="mx-auto max-w-6xl px-4 py-10 relative">
           <p className="font-display text-[10px] text-accent animate-blink">— FINAL STAGE —</p>
           <div className="mt-3 flex flex-wrap items-center justify-between gap-4">
             <div>
-              <h1 className="font-display text-2xl sm:text-3xl text-neon text-glow-neon">PARTY MODE</h1>
-              <p className="mt-2 font-mono-retro text-xl text-muted-foreground">After dark. Smart host. Pure chaos.</p>
+              <h1 className="font-display text-2xl sm:text-4xl text-neon text-glow-neon animate-flicker">PARTY MODE</h1>
+              <p className="mt-2 font-mono-retro text-xl text-muted-foreground">{partyMode ? hype : "Smash the button. Start the chaos."}</p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={() => setPartyMode(!partyMode)}
-                className={`rounded-sm px-6 py-3 font-display text-xs shadow-arcade transition-transform hover:translate-y-0.5 ${
-                  partyMode ? "bg-neon text-neon-foreground shadow-neon" : "bg-primary text-primary-foreground"
-                }`}
-              >
-                {partyMode ? "🔓 BAR IS OPEN" : "🔒 OPEN THE BAR"}
-              </button>
-              <button
-                onClick={() => {
-                  if (confirm("Close the bar? This resets tonight's stats and adds low-stock items to your shopping list.")) barIsClosed();
-                }}
-                className="rounded-sm border border-destructive px-4 py-3 font-display text-xs text-destructive hover:bg-destructive/10"
-              >
-                🔒 BAR IS CLOSED
-              </button>
-            </div>
+            <button
+              onClick={handleToggleBar}
+              className={`rounded-sm px-6 py-4 font-display text-xs shadow-arcade transition-transform hover:translate-y-0.5 active:translate-y-1 ${
+                partyMode
+                  ? "bg-destructive text-destructive-foreground"
+                  : "bg-neon text-neon-foreground shadow-neon animate-pulse"
+              }`}
+            >
+              {partyMode ? "🔒 BAR IS CLOSED" : "🎉 BAR IS OPEN"}
+            </button>
           </div>
         </div>
       </header>
@@ -157,8 +197,126 @@ function PartyPage() {
       </section>
 
       <section className="mx-auto max-w-6xl px-4 grid gap-5 md:grid-cols-2 lg:grid-cols-3 pb-16">
+        {/* Quick Drink Logger — TOP PRIORITY */}
+        <div className="rounded-md border-2 border-neon bg-card p-5 md:col-span-2 lg:col-span-3 shadow-neon">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h2 className="font-display text-base text-neon text-glow-neon">🍻 LOG A DRINK</h2>
+            <p className="font-mono-retro text-base text-muted-foreground">Tap. Drink. Repeat.</p>
+          </div>
+
+          {/* Tabs */}
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            {([
+              ["beer", `🍺 BEER (${beers.length})`],
+              ["shot", `🥃 SHOTS (${shotsAvail.length})`],
+              ["cocktail", `🍹 MIXED (${cocktails.length})`],
+            ] as [Tab, string][]).map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setTab(k)}
+                className={`rounded-sm px-2 py-3 font-display text-[11px] transition ${
+                  tab === k
+                    ? "bg-primary text-primary-foreground shadow-arcade"
+                    : "border border-border text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Big tap buttons */}
+          <div className="mt-4">
+            {tab === "beer" && (
+              beers.length === 0 ? (
+                <p className="font-mono-retro text-lg text-muted-foreground">No beer in stock. Add some on the Inventory page.</p>
+              ) : (
+                <div className="grid gap-3 grid-cols-2 sm:grid-cols-3">
+                  {beers.map((b) => (
+                    <button
+                      key={b.id}
+                      onClick={() => quickBeer(b.id, b.name)}
+                      className="rounded-md bg-accent text-accent-foreground p-4 font-display text-xs shadow-arcade transition-transform hover:translate-y-0.5 active:translate-y-1 active:animate-wobble"
+                    >
+                      <div className="text-3xl">🍺</div>
+                      <div className="mt-1 truncate">{b.name}</div>
+                      <div className="mt-1 font-mono-retro text-base opacity-70">{b.amount} left</div>
+                    </button>
+                  ))}
+                </div>
+              )
+            )}
+
+            {tab === "shot" && (
+              shotsAvail.length === 0 ? (
+                <p className="font-mono-retro text-lg text-muted-foreground">No liquor in stock. Add a bottle on the Inventory page.</p>
+              ) : (
+                <div className="grid gap-3 grid-cols-2 sm:grid-cols-3">
+                  {shotsAvail.map((l) => (
+                    <div key={l.id} className="rounded-md border border-border bg-muted/40 p-3 text-center">
+                      <div className="text-3xl">🥃</div>
+                      <div className="mt-1 font-display text-[11px] truncate">{l.name}</div>
+                      <div className="font-mono-retro text-base text-muted-foreground">{shotsOf(l).toFixed(1)} shots</div>
+                      <div className="mt-2 grid grid-cols-2 gap-1">
+                        <button
+                          onClick={() => quickShot(l.id, l.name, "normal")}
+                          className="rounded-sm bg-primary text-primary-foreground py-2 font-display text-[10px] shadow-arcade active:translate-y-0.5"
+                        >
+                          SHOT
+                        </button>
+                        <button
+                          onClick={() => quickShot(l.id, l.name, "toForget")}
+                          className="rounded-sm bg-destructive text-destructive-foreground py-2 font-display text-[10px] shadow-arcade active:translate-y-0.5"
+                        >
+                          💀 DOUBLE
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            )}
+
+            {tab === "cocktail" && (
+              cocktails.length === 0 ? (
+                <p className="font-mono-retro text-lg text-muted-foreground">No mixable cocktails. Add liquor + mixers to unlock recipes.</p>
+              ) : (
+                <div className="grid gap-3 grid-cols-1 sm:grid-cols-2">
+                  {cocktails.map((c, idx) => (
+                    <button
+                      key={c.recipe.name}
+                      onClick={() => quickCocktail(idx, "normal")}
+                      className="rounded-md bg-secondary text-secondary-foreground p-4 text-left shadow-arcade transition-transform hover:translate-y-0.5 active:translate-y-1"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-3xl">{c.recipe.emoji}</span>
+                        <span className="font-display text-xs">{c.recipe.name}</span>
+                      </div>
+                      <div className="mt-2 font-mono-retro text-sm opacity-80">{c.recipe.instructions}</div>
+                    </button>
+                  ))}
+                </div>
+              )
+            )}
+          </div>
+
+          {drinks.length > 0 && (
+            <div className="mt-5 border-t border-border pt-4">
+              <p className="font-mono-retro text-xs uppercase tracking-wider text-muted-foreground">Recent</p>
+              <ul className="mt-2 grid sm:grid-cols-2 gap-x-6">
+                {drinks.slice(0, 6).map((d) => (
+                  <li key={d.id} className="flex justify-between font-mono-retro text-base">
+                    <span>{STRENGTH_OPTS[d.strength].label.split(" ")[0]} {d.name}</span>
+                    <span className="text-muted-foreground">{new Date(d.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
         {/* Status */}
-        <div className="rounded-md border border-border bg-card p-5 md:col-span-2 lg:col-span-1">
+        <div className="rounded-md border border-border bg-card p-5">
           <h2 className="font-display text-sm text-accent">🚀 PARTY STATUS</h2>
           <p className="mt-4 font-display text-base text-primary text-glow-soft">{status.emoji} {status.title}</p>
           <p className="mt-2 font-mono-retro text-base text-muted-foreground">{status.message}</p>
@@ -218,93 +376,6 @@ function PartyPage() {
           )}
         </div>
 
-        {/* Quick Drink Logger */}
-        <div className="rounded-md border border-border bg-card p-5 md:col-span-2">
-          <h2 className="font-display text-sm text-accent">🍻 LOG A DRINK</h2>
-          <p className="mt-2 font-mono-retro text-sm text-muted-foreground">
-            Track what you actually drink. Deducts from inventory automatically.
-          </p>
-          {options.length === 0 ? (
-            <p className="mt-4 font-mono-retro text-lg text-muted-foreground">Nothing pourable. Add beer, liquor, or mixers first.</p>
-          ) : (
-            <>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <label className="block">
-                  <span className="font-mono-retro text-xs uppercase tracking-wider text-muted-foreground">Drink</span>
-                  <select
-                    value={selectedKey}
-                    onChange={(e) => setSelectedKey(e.target.value)}
-                    className="mt-1 w-full rounded-sm border border-input bg-background px-2 py-2 font-mono-retro text-base"
-                  >
-                    <option value="">— Pick one —</option>
-                    {beers.length > 0 && (
-                      <optgroup label="🍺 Beers">
-                        {options.filter((o) => o.kind === "beer").map((o) => (
-                          <option key={`beer:${(o as { id: string }).id}`} value={`beer:${(o as { id: string }).id}`}>{o.label}</option>
-                        ))}
-                      </optgroup>
-                    )}
-                    {shotsAvail.length > 0 && (
-                      <optgroup label="🥃 Shots">
-                        {options.filter((o) => o.kind === "shot").map((o) => (
-                          <option key={`shot:${(o as { id: string }).id}`} value={`shot:${(o as { id: string }).id}`}>{o.label}</option>
-                        ))}
-                      </optgroup>
-                    )}
-                    {cocktails.length > 0 && (
-                      <optgroup label="🍹 Cocktails">
-                        {options.filter((o) => o.kind === "cocktail").map((o) => {
-                          const idx = (o as { recipeIndex: number }).recipeIndex;
-                          return <option key={`cocktail:${idx}`} value={`cocktail:${idx}`}>{o.label}</option>;
-                        })}
-                      </optgroup>
-                    )}
-                  </select>
-                </label>
-                {selected && (selected.kind === "shot" || selected.kind === "cocktail") && (
-                  <label className="block">
-                    <span className="font-mono-retro text-xs uppercase tracking-wider text-muted-foreground">Strength</span>
-                    <select
-                      value={strength}
-                      onChange={(e) => setStrength(e.target.value as Strength)}
-                      className="mt-1 w-full rounded-sm border border-input bg-background px-2 py-2 font-mono-retro text-base"
-                    >
-                      {(Object.keys(STRENGTH_OPTS) as Strength[]).map((k) => (
-                        <option key={k} value={k}>{STRENGTH_OPTS[k].label} ({STRENGTH_OPTS[k].mult}x)</option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-              </div>
-              {selected?.kind === "cocktail" && (
-                <p className="mt-3 font-mono-retro text-sm text-muted-foreground">
-                  {cocktails[selected.recipeIndex]?.recipe.instructions}
-                </p>
-              )}
-              <button
-                onClick={handleLogDrink}
-                disabled={!selected}
-                className="mt-4 rounded-sm bg-neon px-4 py-2 font-display text-xs text-neon-foreground shadow-neon transition-transform hover:translate-y-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                + LOG DRINK
-              </button>
-            </>
-          )}
-          {drinks.length > 0 && (
-            <div className="mt-5 border-t border-border pt-4">
-              <p className="font-mono-retro text-xs uppercase tracking-wider text-muted-foreground">Recent</p>
-              <ul className="mt-2 space-y-1">
-                {drinks.slice(0, 5).map((d) => (
-                  <li key={d.id} className="flex justify-between font-mono-retro text-sm">
-                    <span>{STRENGTH_OPTS[d.strength].label.split(" ")[0]} {d.name}</span>
-                    <span className="text-muted-foreground">{new Date(d.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-
         {/* Top Drinks */}
         <div className="rounded-md border border-border bg-card p-5">
           <h2 className="font-display text-sm text-accent">🏆 TOP DRINKS TONIGHT</h2>
@@ -321,8 +392,85 @@ function PartyPage() {
             </ol>
           )}
         </div>
-
       </section>
+
+      {/* ========== Bar Is Open popup ========== */}
+      {showOpenPopup && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-gradient-party opacity-95" aria-hidden />
+          <div className="absolute inset-0 scanlines pointer-events-none" aria-hidden />
+          <ConfettiLayer />
+          <div className="relative z-10 max-w-xl w-full rounded-md border-4 border-accent bg-card/95 p-8 text-center shadow-neon animate-slide-up-bounce">
+            <p className="font-display text-[10px] text-accent animate-blink">— LEVEL UNLOCKED —</p>
+            <h2 className="mt-4 font-display text-2xl sm:text-3xl text-neon text-glow-neon">
+              LET'S GET THIS<br/>PARTY STARTED!
+            </h2>
+            <p className="mt-4 font-mono-retro text-2xl text-foreground">
+              🎉🍻🚀 The bar is officially OPEN 🚀🍻🎉
+            </p>
+            <p className="mt-2 font-mono-retro text-lg text-muted-foreground">
+              Hydrate. Pace yourself. Or don't. We don't judge.
+            </p>
+            <button
+              onClick={() => setShowOpenPopup(false)}
+              className="mt-6 rounded-sm bg-neon px-8 py-4 font-display text-sm text-neon-foreground shadow-neon hover:translate-y-0.5 transition-transform"
+            >
+              POUR ME IN →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ========== Bar Is Closed confirm popup ========== */}
+      {showClosedConfirm && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-background/85 backdrop-blur-sm" aria-hidden />
+          <div className="relative z-10 max-w-md w-full rounded-md border-2 border-destructive bg-card p-7 text-center shadow-arcade animate-slide-up-bounce">
+            <div className="text-5xl">🚪</div>
+            <h2 className="mt-3 font-display text-lg text-destructive text-glow-soft">LAST CALL</h2>
+            <p className="mt-4 font-mono-retro text-2xl text-foreground leading-snug">
+              "You don't have to leave,<br/>but you can't stay here."
+            </p>
+            <p className="mt-3 font-mono-retro text-base text-muted-foreground">
+              Closing the bar resets tonight's stats.
+            </p>
+            <div className="mt-6 grid grid-cols-2 gap-3">
+              <button
+                onClick={() => setShowClosedConfirm(false)}
+                className="rounded-sm border border-border px-4 py-3 font-display text-[11px] hover:bg-muted"
+              >
+                ONE MORE
+              </button>
+              <button
+                onClick={handleConfirmClose}
+                className="rounded-sm bg-destructive px-4 py-3 font-display text-[11px] text-destructive-foreground shadow-arcade hover:translate-y-0.5"
+              >
+                CLOSE BAR
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== Shot Clock alert ========== */}
+      {shotAlert && (
+        <div className="fixed inset-0 z-[110] flex flex-col items-center justify-center p-4 animate-party-flash">
+          <ConfettiLayer />
+          <div className="relative text-center">
+            <p className="font-display text-sm sm:text-base text-background animate-blink">⏰ TIME'S UP ⏰</p>
+            <h2 className="mt-4 font-display text-5xl sm:text-7xl text-background animate-pulse-shot">
+              TAKE A SHOT!
+            </h2>
+            <p className="mt-6 font-mono-retro text-3xl text-background">🥃🥃🥃 GO GO GO 🥃🥃🥃</p>
+            <button
+              onClick={() => setShotAlert(false)}
+              className="mt-8 rounded-sm bg-background text-foreground px-6 py-3 font-display text-xs shadow-arcade"
+            >
+              DISMISS
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }
